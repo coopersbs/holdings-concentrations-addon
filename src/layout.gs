@@ -46,7 +46,7 @@ const REPORT_TAB = "Concentration";
  * that a formula or the script reads. The next refresh then replaces the two
  * tabs of each spreadsheet.
  */
-const LAYOUT_VERSION = 12;
+const LAYOUT_VERSION = 14;
 
 /**
  * The cell of the tab Concentration.Exposure that holds the layout version.
@@ -337,18 +337,24 @@ CHOOSECOLS(r,3,5,6),ARRAYFORMULA(CHOOSECOLS(r,7)/CHOOSECOLS(r,6)))))`;
 }
 
 /**
- * The formula of B9: the seconds of the newest run in A15:B24 of the tab
+ * The formula of B9: the seconds of the newest run in A16:B25 of the tab
  * Concentration.Exposure. B9 is empty when no run is recorded.
  */
-const RUN_LAST_FORMULA = `=IF(ISNUMBER('Concentration.Exposure'!B15),'Concentration.Exposure'!B15,"")`;
+function runLastFormula() {
+  const cell = exposure(`B${RUN_HEADER_ROW + 1}`);
+  return `=IF(ISNUMBER(${cell}),${cell},"")`;
+}
 
 /**
- * The formula of B10: the average seconds of the runs in A15:B24 of the tab
- * Concentration.Exposure. The block keeps 10 runs at most, so the average
- * uses each recorded run when fewer than 10 exist. B10 is empty when no run
- * is recorded.
+ * The formula of B10: the average seconds of the runs in A16:B25 of the tab
+ * Concentration.Exposure. The block keeps RUN_LIMIT runs at most, so the
+ * average uses each recorded run when fewer than RUN_LIMIT exist. B10 is
+ * empty when no run is recorded.
  */
-const RUN_AVERAGE_FORMULA = `=IF(COUNT('Concentration.Exposure'!B15:B24)=0,"",AVERAGE('Concentration.Exposure'!B15:B24))`;
+function runAverageFormula() {
+  const block = exposure(`B${RUN_HEADER_ROW + 1}:B${RUN_HEADER_ROW + RUN_LIMIT}`);
+  return `=IF(COUNT(${block})=0,"",AVERAGE(${block}))`;
+}
 
 /**
  * The formula of a cell that shows one field of the equity block. The cell is
@@ -408,12 +414,18 @@ function coverageFormula() {
 /**
  * The formula of one row of the Composition block: the sum of the stock
  * weight of the rows of the stock part that meet the comparison with the
- * threshold. The comparison is `>=` or `<`.
+ * threshold. The comparison is `>=` or `<`. The stock part of the cap line
+ * holds many securities, so it adds to the row `<` whatever its weight.
  */
 function stockSumFormula(comparison) {
   const x = exposureColumns();
   const stock = exposureColumn(x.stock);
-  return `=SUMIFS(${stock},${exposureColumn(x.part)},"${STOCK_PART}",${stock},"${comparison}"&$B$${THRESHOLD_ROW})`;
+  const part = exposureColumn(x.part);
+  const key = exposureColumn(x.key);
+  const sum = (sign, keyRule) =>
+    `SUMIFS(${stock},${part},"${STOCK_PART}",${stock},"${sign}"&$B$${THRESHOLD_ROW},${key},"${keyRule}")`;
+  if (comparison === ">=") return `=${sum(">=", `<>${CAP_KEY}`)}`;
+  return `=${sum("<", `<>${CAP_KEY}`)}+SUMIFS(${stock},${part},"${STOCK_PART}",${key},"${CAP_KEY}")`;
 }
 
 /**
@@ -441,7 +453,8 @@ const OVERLAP_NOTE = "Overlap is the part of the two funds that sits in the same
 /**
  * The note above the header of the company table.
  */
-const TRUST_NOTE = "A commodity trust or a crypto trust, such as GLD or IBIT, counts as one security.";
+const TRUST_NOTE =
+  "A trust or a closed-end fund, such as SPY, GLD, or IBIT, is not a company. Other holdings shows it as one line.";
 
 /**
  * The text of the section Holdings when the Holdings tab holds no
@@ -487,12 +500,12 @@ const NO_NAME = "No symbol or description";
  * cell. The rows sort by value, largest first. A Total row with the total
  * value cell ends the section.
  *
- * LN, LT, LW, LX, and LP are the columns of the lines block: the name, the
- * ticker, the weight, the stock weight, and the part name. LS is the sources
- * block, and LH is the row of the position ids. LS and LH end at the column
- * of position MAX_POSITIONS. f holds each id of the stock fund block, or one
- * empty string when the block is empty. The header of the company table
- * holds one column for each id of f, from column H.
+ * LN, LT, LW, LX, LP, and LK are the columns of the lines block: the name,
+ * the ticker, the weight, the stock weight, the part name, and the key. LS
+ * is the sources block, and LH is the row of the position ids. LS and LH end
+ * at the column of position MAX_POSITIONS. f holds each id of the stock fund
+ * block, or one empty string when the block is empty. The header of the
+ * company table holds one column for each id of f, from column H.
  *
  * Each row of the lines block is one part of a line. pw is the weight of the
  * part: the stock weight on a row of the stock part, and the weight minus the
@@ -502,7 +515,10 @@ const NO_NAME = "No symbol or description";
  * whatever the class of the line. The source cells of that row are the stock
  * part of each source, so the Direct column and the fund columns add up to
  * the row. The row of the securities under the threshold follows the company
- * rows with the next rank, the count of the company rows plus 1.
+ * rows with the next rank, the count of the company rows plus 1. The stock
+ * part of the cap line, the line with the key CAP_KEY, holds many
+ * securities. It goes into that row whatever its weight, and the count of the
+ * row then ends with "and more".
  *
  * The section of the funds not looked through gives one row to each holding
  * with no mix whose lines of the class unknown hold UNSEEN_FLOOR or more of
@@ -518,14 +534,20 @@ const NO_NAME = "No symbol or description";
  * The script writes the rows of the other part that get a row of their own
  * into the own block, and the groups of the other rows of the other part
  * into the group block. A row of the other part gets a row of its own when
- * the class of its line is not stock and the line is a residual line, holds
- * a direct position, or has the class unknown. Each other row of the other
- * part goes into the group of its class. keep selects the rows of the own
- * block, and grp selects the rows of the group block. Both hold 1 and 0, not
- * TRUE and FALSE, because SUM adds no TRUE in an array, and nown and ng count
- * the rows with SUM. The groups of the classes stock and fund always get a
- * row. Another group with a value under 100 goes into one row of small
- * holdings.
+ * the class of its line is not stock and the line is a residual line, is
+ * the cap line, holds a direct position, or has the class unknown. Each
+ * other row of the other part goes into the group of its class. The own row
+ * of a residual line names the fund ticker, so oname shows the Description
+ * of that fund. The route gives the class trust to a direct line alone, and
+ * the class cash also to a direct line of a money market fund. Each such
+ * line that holds a direct position gets a row of its own with the kind of
+ * its class. The line of a trust in a fund mix that holds a fund has no
+ * direct weight, so it goes into the group trust. keep selects the rows of
+ * the own block, and grp selects the rows of the group block. Both hold 1
+ * and 0, not TRUE and FALSE, because SUM adds no TRUE in an array, and nown
+ * and ng count the rows with SUM. The groups of the classes stock and fund
+ * always get a row. Another group with a value under 100 goes into one row
+ * of small holdings.
  *
  * The formula finds the Symbol, the Description, and the Value columns of the
  * Holdings tab by the header text in row 1, as the total value cell finds the
@@ -537,7 +559,7 @@ function reportFormula() {
   const x = exposureColumns();
   const column = (letter) => exposureColumn(letter);
   const floor = UNSEEN_FLOOR;
-  return `=LET(LN,${column(x.name)},LT,${column(x.ticker)},LW,${column(x.weight)},LX,${column(x.stock)},LP,${column(x.part)},
+  return `=LET(LN,${column(x.name)},LT,${column(x.ticker)},LW,${column(x.weight)},LX,${column(x.stock)},LP,${column(x.part)},LK,${column(x.key)},
 LS,${exposure(`$${x.first}$${FIRST_DATA_ROW}:$${x.last}`)},LH,${exposure(`$${x.first}$${HEADER_ROW}:$${x.last}$${HEADER_ROW}`)},
 f,IFNA(FILTER(${column(x.stockFund)},${column(x.stockFund)}<>""),""),
 hh,Holdings!$1:$1,
@@ -564,7 +586,7 @@ MT,${column(x.mixTicker)},MP,${column(x.mixPart)},MS,${column(x.mixSubstitute)},
 hn,LAMBDA(n,IF(ISNA(hs)+ISNA(hd),n,IFNA(XLOOKUP(n,INDIRECT("Holdings!C"&hs,FALSE),INDIRECT("Holdings!C"&hd,FALSE)),n))),
 pw,ARRAYFORMULA(IF(LP="${STOCK_PART}",LX,IF(LP="${OTHER_PART}",LW-LX,0))),
 dw,${column(x.direct)},
-sel,ARRAYFORMULA((LP="${STOCK_PART}")*ISNUMBER(LX)*(LX>=thr)),
+sel,ARRAYFORMULA((LP="${STOCK_PART}")*ISNUMBER(LX)*(LX>=thr)*(LK<>"${CAP_KEY}")),
 top,IF(SUM(sel)=0,HSTACK("","No company at or above the threshold."),
  LET(blk,SORT(HSTACK(FILTER(LN,sel),FILTER(LT,sel),FILTER(LX,sel),FILTER(dw,sel),FILTER(LS,sel)),3,FALSE),
   sw,CHOOSECOLS(blk,3),mx,MAX(sw),
@@ -572,11 +594,12 @@ top,IF(SUM(sel)=0,HSTACK("","No company at or above the threshold."),
   HSTACK(SEQUENCE(ROWS(sw)),CHOOSECOLS(blk,1,2),ARRAYFORMULA(sw*tot),sw,
    MAP(sw,LAMBDA(x,SPARKLINE(x,{"charttype","bar";"max",mx;"color1","#2a78d6"}))),
    ARRAYFORMULA(ROUND(CHOOSECOLS(blk,4),12)),fx))),
-rsel,ARRAYFORMULA((LP="${STOCK_PART}")*ISNUMBER(LX)*(LX<thr)),
-rw,SUMIFS(LX,LP,"${STOCK_PART}",LX,"<"&thr),
-rc,COUNTIFS(LP,"${STOCK_PART}",LX,"<"&thr,LX,"<>0"),
-rf,MAP(f,LAMBDA(x,IFERROR(SUMIFS(INDEX(LS,0,XMATCH(x,LH)),LP,"${STOCK_PART}",LX,"<"&thr),0))),
-rest,HSTACK(SUM(sel)+1,"Securities under "&TEXT(thr,"0.00%")&" ("&TEXT(rc,"#,##0")&")","",rw*tot,rw,"",ROUND(SUM(IFNA(FILTER(dw,rsel),0)),12),TRANSPOSE(rf)),
+rsel,ARRAYFORMULA((LP="${STOCK_PART}")*ISNUMBER(LX)*((LX<thr)+(LK="${CAP_KEY}")>0)),
+rw,SUM(ARRAYFORMULA(IF(rsel,LX,0))),
+rc,COUNTIFS(LP,"${STOCK_PART}",LX,"<"&thr,LX,"<>0",LK,"<>${CAP_KEY}"),
+rk,COUNTIFS(LP,"${STOCK_PART}",LK,"${CAP_KEY}"),
+rf,MAP(f,LAMBDA(x,IFERROR(SUM(FILTER(INDEX(LS,0,XMATCH(x,LH)),rsel)),0))),
+rest,HSTACK(SUM(sel)+1,"Securities under "&TEXT(thr,"0.00%")&" ("&TEXT(rc,"#,##0")&IF(rk>0," and more","")&")","",rw*tot,rw,"",ROUND(SUM(IFNA(FILTER(dw,rsel),0)),12),TRANSPOSE(rf)),
 ${unseenNames()}
 cx,{"","","","","","","x"},
 cu,LET(q,IFNA(FILTER(uid,uu>=${floor}),""),
@@ -608,15 +631,19 @@ ow,FILTER(${column(x.ownWeight)},keep),came,FILTER(${column(x.ownSources)},keep)
 oname,IF(ISNA(hs)+ISNA(hd),on,
  LET(sc,INDIRECT("Holdings!C"&hs,FALSE),sy,ARRAYFORMULA(IF(ROW(sc)=1,"",sc)),de,INDIRECT("Holdings!C"&hd,FALSE),
   MAP(on,LAMBDA(n,IFNA(XLOOKUP(n,sy,de),n))))),
-kind,MAP(ok,oc,on,LAMBDA(k,c,n,IF(LEFT(k,9)="residual:","not looked through",IF(RIGHT(n,16)=" (not described)","not described",
- SWITCH(c,"fund","fund, no holdings data","unknown","not in the SEC data",c))))),
+kind,MAP(ok,oc,on,LAMBDA(k,c,n,IF(LEFT(k,9)="residual:","cash and other net assets",IF(k="${CAP_KEY}","many small lines, combined",
+ IF(RIGHT(n,16)=" (not described)","not described",
+ SWITCH(c,"fund","fund, no holdings data","trust","trust or closed-end fund, no holdings data","cash","money market fund",
+  "unknown","not in the SEC data","preferred","preferred shares",c)))))),
 ownRows,HSTACK(oname,kind,ARRAYFORMULA(ow*tot),ow,came),
 grp,ARRAYFORMULA(ISNUMBER(${column(x.groupWeight)})*1),
 cls,FILTER(${column(x.groupClass)},grp),
 gw,FILTER(${column(x.groupWeight)},grp),
 gn,FILTER(${column(x.groupCount)},grp),
-gl,MAP(cls,gn,LAMBDA(x,m,SWITCH(x,"stock","Bonds of companies whose stock you hold","fund","Funds held by the funds, not looked through","cash","Cash and money market funds inside funds","derivative","Derivatives inside funds","treasury","Treasury securities inside funds","other","Other holdings inside funds",x&" inside funds")&" ("&TEXT(m,"#,##0")&")")),
-gk,MAP(cls,LAMBDA(x,SWITCH(x,"stock","bond or other security","fund","fund, not looked through",x))),
+gl,MAP(cls,gn,LAMBDA(x,m,SWITCH(x,"stock","Bonds and other securities of companies whose stock you hold","fund","Funds held by the funds, not looked through","cash","Cash and money market funds inside funds","derivative","Derivatives inside funds","treasury","Treasury securities inside funds","preferred","Preferred shares inside funds",
+ "trust","Trusts and closed-end funds inside funds","other","Other holdings inside funds",x&" inside funds")&" ("&TEXT(m,"#,##0")&")")),
+gk,MAP(cls,LAMBDA(x,SWITCH(x,"stock","bond or other security","fund","fund, not looked through","preferred","preferred shares",
+ "trust","trust or closed-end fund",x))),
 gf,FILTER(${column(x.groupSources)},grp),
 grpAll,HSTACK(gl,gk,ARRAYFORMULA(gw*tot),gw,gf),
 big,ARRAYFORMULA(IF((cls="stock")+(cls="fund")>0,1,IF(ISNUMBER(gw*tot),IF(ABS(gw*tot)>=100,1,0),1))),
@@ -1044,7 +1071,7 @@ function freshAnchorRow(report, hidden, anchor, heading) {
  * version and the labels. The refresh writes the status, the time, the
  * answer, the mix block, the unseen block, the stock fund block, the own
  * block, the group block, and the direct weights. A good refresh also writes
- * its start time and its seconds into the run-time block A15:B24, newest
+ * its start time and its seconds into the run-time block A16:B25, newest
  * first. The grid holds the source column of each position up to
  * MAX_POSITIONS, then the columns of the company chart block, the anchor
  * column of the company chart, the columns of the holdings chart block, and
@@ -1062,6 +1089,10 @@ function exposureLayout() {
   const data = (name) => `${name}${FIRST_DATA_ROW}:${name}`;
   const fund = (name) => letter(FUND_COLUMN + FUND_FIELDS.indexOf(name));
   const lastMeasure = FIRST_DATA_ROW + MEASURE_NAMES.length - 1;
+  const runFirst = RUN_HEADER_ROW + 1;
+  const runLast = RUN_HEADER_ROW + RUN_LIMIT;
+  const equityFirst = EQUITY_HEADER_ROW + 1;
+  const equityLast = EQUITY_HEADER_ROW + EQUITY_NAMES.length;
   const chartLast = CHART_COLUMN + CHART_BLOCK_WIDTH - 1;
   const holdingsShare = letter(HOLDINGS_CHART_COLUMN + 1);
   return {
@@ -1119,9 +1150,9 @@ function exposureLayout() {
       { range: header(OWN_COLUMN, OWN_FIELDS.length), values: [OWN_FIELDS] },
       { range: header(GROUP_COLUMN, GROUP_FIELDS.length), values: [GROUP_FIELDS] },
       { range: header(LINE_COLUMN, LINE_FIELDS.length + 2), values: [[...LINE_FIELDS, "part", "directWeight"]] },
-      { range: "A14:B14", values: [["runStart", "seconds"]] },
-      { range: "A26:B26", values: [["equity", "value"]] },
-      { range: "A27:A31", values: EQUITY_NAMES.map((name) => [name]) },
+      { range: `A${RUN_HEADER_ROW}:B${RUN_HEADER_ROW}`, values: [["runStart", "seconds"]] },
+      { range: `A${EQUITY_HEADER_ROW}:B${EQUITY_HEADER_ROW}`, values: [["equity", "value"]] },
+      { range: `A${equityFirst}:A${equityLast}`, values: EQUITY_NAMES.map((name) => [name]) },
       { range: header(ANCHOR_COLUMN, 1), values: [["chartRow"]] },
       { range: header(HOLDINGS_ANCHOR_COLUMN, 1), values: [["holdingsChartRow"]] },
     ],
@@ -1139,21 +1170,21 @@ function exposureLayout() {
         numberFormat: "0.00%",
       },
       { range: header(HOLDINGS_ANCHOR_COLUMN, 1), bold: true, background: "#f7f6f1" },
-      { range: "A14:B14", bold: true, background: "#f7f6f1" },
-      { range: "A26:B26", bold: true, background: "#f7f6f1" },
-      { range: "A15:A24", numberFormat: "yyyy-mm-dd hh:mm:ss" },
-      { range: "B15:B24", numberFormat: "0.000" },
+      { range: `A${RUN_HEADER_ROW}:B${RUN_HEADER_ROW}`, bold: true, background: "#f7f6f1" },
+      { range: `A${EQUITY_HEADER_ROW}:B${EQUITY_HEADER_ROW}`, bold: true, background: "#f7f6f1" },
+      { range: `A${runFirst}:A${runLast}`, numberFormat: "yyyy-mm-dd hh:mm:ss" },
+      { range: `B${runFirst}:B${runLast}`, numberFormat: "0.000" },
       { range: "B2", numberFormat: "yyyy-mm-dd hh:mm:ss" },
       { range: "B5", numberFormat: "#,##0" },
       { range: "B6", numberFormat: "0.000000" },
       { range: "B7", numberFormat: "0.0" },
       { range: "B8", numberFormat: "0.00" },
       { range: `B9:B${lastMeasure}`, numberFormat: "0.000000" },
-      { range: "B27", numberFormat: "0.000000" },
-      { range: "B28", numberFormat: "#,##0" },
-      { range: "B29", numberFormat: "0.000000" },
-      { range: "B30", numberFormat: "0.0" },
-      { range: "B31", numberFormat: "0.00" },
+      { range: `B${equityFirst}`, numberFormat: "0.000000" },
+      { range: `B${equityFirst + 1}`, numberFormat: "#,##0" },
+      { range: `B${equityFirst + 2}`, numberFormat: "0.000000" },
+      { range: `B${equityFirst + 3}`, numberFormat: "0.0" },
+      { range: `B${equityLast}`, numberFormat: "0.00" },
       { range: data(fund("reportDate")), numberFormat: "yyyy-mm-dd" },
       { range: data(fund("holdingCount")), numberFormat: "#,##0" },
       { range: `${fund("weight")}${FIRST_DATA_ROW}:${fund("coveredWeight")}`, numberFormat: "0.00000" },
@@ -1230,8 +1261,8 @@ function reportLayout(inputs = {}) {
           ["Total value", TOTAL_FORMULA],
           ["Looked through", `=${measureCell("lookedThroughWeight")}`],
           ["Not looked through", `=${measureCell("notLookedThroughWeight")}`],
-          ["Last run time", RUN_LAST_FORMULA],
-          ["Average (last 10)", RUN_AVERAGE_FORMULA],
+          ["Last run time", runLastFormula()],
+          ["Average (last 10)", runAverageFormula()],
         ],
       },
       {

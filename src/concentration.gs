@@ -123,8 +123,9 @@ const TICKER_PATTERN = /^[A-Z0-9][A-Z0-9.-]{0,11}$/;
 const HOLDINGS_COLUMNS = ["Description", "Symbol", "Value"];
 
 /**
- * The measures of the answer, in the order of the rows B5:B13. An answer
- * with no unknownWeight leaves B13 empty.
+ * The measures of the answer, in the order of the rows B5:B14. An answer
+ * with no unknownWeight leaves B13 empty, and an answer with no
+ * preferredWeight leaves B14 empty.
  */
 const MEASURE_NAMES = [
   "lineCount",
@@ -136,11 +137,12 @@ const MEASURE_NAMES = [
   "weightSum",
   "weightDifference",
   "unknownWeight",
+  "preferredWeight",
 ];
 
 /**
  * The fields of the equity block of the measures, in the order of the rows
- * B27:B31. The equity block holds the measures of the stock part alone.
+ * B28:B32. The equity block holds the measures of the stock part alone.
  */
 const EQUITY_NAMES = ["weight", "lineCount", "top10Weight", "hhi", "effectiveCount"];
 
@@ -350,23 +352,24 @@ const HOLDINGS_BLOCK_WIDTH = 2;
 const HOLDINGS_ANCHOR_COLUMN = HOLDINGS_CHART_COLUMN + HOLDINGS_BLOCK_WIDTH + 1;
 
 /**
- * The row of the header of the run-time block, A14:B14. The block holds one
- * row for each good refresh from row 15: the start time in column A and the
+ * The row of the header of the run-time block, A15:B15. The block holds one
+ * row for each good refresh from row 16: the start time in column A and the
  * seconds in column B, newest first.
  */
-const RUN_HEADER_ROW = 14;
+const RUN_HEADER_ROW = FIRST_DATA_ROW + MEASURE_NAMES.length;
 
 /**
  * The largest count of refreshes that the run-time block keeps. The rows are
- * A15:B24.
+ * A16:B25.
  */
 const RUN_LIMIT = 10;
 
 /**
- * The row of the header of the equity block, A26:B26. The block holds one row
- * for each field of EQUITY_NAMES from row 27.
+ * The row of the header of the equity block, A27:B27. One empty row
+ * separates it from the run-time block. The block holds one row for each
+ * field of EQUITY_NAMES from row 28.
  */
-const EQUITY_HEADER_ROW = 26;
+const EQUITY_HEADER_ROW = RUN_HEADER_ROW + RUN_LIMIT + 2;
 
 /**
  * Add the items Refresh, Describe a fund, and Set API key to the add-on menu.
@@ -846,14 +849,14 @@ function cellValue(value) {
 }
 
 /**
- * The rows B5:B13: one row for each measure, in the order of MEASURE_NAMES.
+ * The rows B5:B14: one row for each measure, in the order of MEASURE_NAMES.
  */
 function measureRows(measures) {
   return MEASURE_NAMES.map((name) => [cellValue(measures[name])]);
 }
 
 /**
- * The rows B27:B31: one row for each field of the equity block, in the order
+ * The rows B28:B32: one row for each field of the equity block, in the order
  * of EQUITY_NAMES. The route gives null for the block when the portfolio
  * holds no stock, and each row is then an empty string.
  */
@@ -863,11 +866,30 @@ function equityRows(equity) {
 }
 
 /**
- * The rows D5:N: one row for each element of the funds block, with the
- * fields of FUND_FIELDS.
+ * True when an element of the funds block names a position or a part that
+ * entered through the holdings of its fund. The block also names each held
+ * fund, with heldBy set, and each fund that did not enter, with entered
+ * false. An element with no entered key entered, as in an answer of schema
+ * version 1.8.
+ */
+function isTopFund(fund) {
+  return fund !== null && typeof fund === "object" && cellValue(fund.heldBy) === "" && fund.entered !== false;
+}
+
+/**
+ * The elements of the funds block that isTopFund keeps, in the order of the
+ * block.
+ */
+function topFunds(funds) {
+  return funds.filter(isTopFund);
+}
+
+/**
+ * The rows D5:N: one row for each element of the funds block that isTopFund
+ * keeps, with the fields of FUND_FIELDS. A null field gives an empty cell.
  */
 function fundRows(funds) {
-  return funds.map((fund) => FUND_FIELDS.map((name) => cellValue(fund[name])));
+  return topFunds(funds).map((fund) => FUND_FIELDS.map((name) => cellValue(fund[name])));
 }
 
 /**
@@ -943,9 +965,16 @@ const UNKNOWN_CLASS = "unknown";
 
 /**
  * The start of the key of a residual line: the part of a fund that its
- * report does not list.
+ * report does not list. The rest of the key is the ticker of the fund.
  */
 const RESIDUAL_PREFIX = "residual:";
+
+/**
+ * The key of the cap line: the sum of the lines after the largest 2,000
+ * lines of an answer. The line holds many securities, so it never is a
+ * company row of the report.
+ */
+const CAP_KEY = "other:lines";
 
 /**
  * The smallest direct weight that gives a row of the other part a row of its
@@ -988,12 +1017,13 @@ function sourceIds(row, ids) {
 }
 
 /**
- * The position ids of the funds block, one time each, in the order of the
- * block. An element with no id adds nothing.
+ * The position ids of the elements of the funds block that isTopFund keeps,
+ * one time each, in the order of the block. An element with no id adds
+ * nothing.
  */
 function fundIds(funds) {
   const ids = new Set();
-  for (const fund of funds) {
+  for (const fund of topFunds(funds)) {
     const id = cellValue(fund.id);
     if (id !== "") ids.add(id);
   }
@@ -1017,7 +1047,8 @@ function directWeights(parts, ids, funds) {
 /**
  * True when the report gives a part row a row of its own: a row of the
  * other part whose line is not of the class stock, and whose line is a
- * residual line, has a direct weight, or has the class unknown.
+ * residual line, is the cap line, has a direct weight, or has the class
+ * unknown.
  */
 function isOwnRow(row, direct) {
   const key = String(row[0]);
@@ -1025,22 +1056,26 @@ function isOwnRow(row, direct) {
   return (
     row[LINE_FIELDS.length] === OTHER_PART &&
     kind !== STOCK_CLASS &&
-    (key.startsWith(RESIDUAL_PREFIX) || Math.abs(direct) > DIRECT_FLOOR || kind === UNKNOWN_CLASS)
+    (key.startsWith(RESIDUAL_PREFIX) || key === CAP_KEY || Math.abs(direct) > DIRECT_FLOOR || kind === UNKNOWN_CLASS)
   );
 }
 
 /**
  * The rows of the own block: one row for each part row with a row of its
  * own, in the order of the part rows. A residual row with a part weight of
- * 0 gets no row. `direct` holds the direct weight of each part row.
+ * 0 gets no row. The name of a residual row is the ticker of its fund, from
+ * the key, because each residual line has the same name. `direct` holds the
+ * direct weight of each part row.
  */
 function ownRows(parts, ids, direct) {
   const rows = [];
   parts.forEach((row, r) => {
     if (!isOwnRow(row, direct[r])) return;
     const weight = partWeight(row);
-    if (String(row[0]).startsWith(RESIDUAL_PREFIX) && weight === 0) return;
-    const name = row[LINE_FIELDS.indexOf("name")];
+    const key = String(row[0]);
+    const residual = key.startsWith(RESIDUAL_PREFIX);
+    if (residual && weight === 0) return;
+    const name = residual ? key.slice(RESIDUAL_PREFIX.length) : row[LINE_FIELDS.indexOf("name")];
     rows.push([row[0], name, row[LINE_FIELDS.indexOf("class")], weight, sourceIds(row, ids)]);
   });
   return rows;
@@ -1120,7 +1155,7 @@ function writeStatus(sheet, text) {
 }
 
 /**
- * Put one good refresh at the top of the run-time block A15:B24 with one
+ * Put one good refresh at the top of the run-time block A16:B25 with one
  * setValues call: the start time in column A and the seconds in column B. The
  * rows of the earlier runs move down one row. The function keeps RUN_LIMIT
  * rows, so the oldest row goes when the block is full. A row with no number
@@ -1431,8 +1466,9 @@ function linkMix(fromKey, toKey) {
  * The name of the fund of a ticker, for the sidebar. The function sends one
  * request to the fund route with the key of the person. The result holds
  * `ok`, the normalized ticker, and the text for the person: the fund name, a
- * note that the ticker is a company stock, or a note that the service does
- * not know the ticker. A text that is not a ticker sends no request.
+ * note that the ticker is a company stock or a trust, or a note that the
+ * service does not know the ticker. A text that is not a ticker sends no
+ * request.
  */
 function lookupFund(ticker) {
   const normal = normalTicker(ticker);
@@ -1470,7 +1506,7 @@ function lookupFund(ticker) {
   }
   const code = errorCode(text);
   if (status === 404 && code === "not_a_fund") {
-    return { ok: true, ticker: normal, text: "A company stock. It counts as that stock." };
+    return { ok: true, ticker: normal, text: "A company stock or a trust, not a fund. It counts as one holding." };
   }
   if (status === 404 && code === "fund_not_found")
     return { ok: false, ticker: normal, text: "We don't know this ticker." };

@@ -1,6 +1,6 @@
 {
   "tab": "Concentration.Exposure",
-  "note": "The answer of the concentration route and the values that the script computes from it. B3 holds the layout version. The script writes B1, B2, B5:B13, B27:B31, D5:N, P5:S, and the mix block U5:Z. It writes the unseen block AB5:AC, one row for each position with the weight of the lines of the class unknown that came through it. It writes the stock fund block AE5:AE, the own block AG5:AK of the rows that the report shows on a row of their own, and the group block AM5:AP of the other rows of the other part, one row for each class. It writes the rows of the lines from AR5, the direct weight of each row in column AZ, and one source column for each position from column BA, with the position id in row 4. A line gives one row for its stock part, one row for its other part, or both, and column AY names the part. The mix block holds one row for each fund of each mix that the request sent. A good refresh also writes its start time and its seconds into A15:B24, newest first, 10 rows at most. The company chart block IT4:JA104 holds the source of the company chart of the report tab. Each of its cells is a formula that reads the company table of the report spill. Row 4 holds the series names, and a header that shows an empty string marks a column with no series. The eachRow entry holds the one row of formulas that each of the 100 data rows holds. The anchor cell JC5 holds the row of the report tab where the company chart starts: it finds the header row of the company chart in the report spill and adds 1. The holdings chart block JE4:JF204 holds the source of the holdings chart. Each of its cells is a formula that reads the section Holdings of the report spill: the label of each holding group and its share of the portfolio, in the order of the table. The header of the share column shows an empty string when the table holds no group. The eachRow entry holds the one row of formulas that each of the 200 data rows holds. The anchor cell JH5 holds the row of the report tab where the holdings chart starts: it finds the header row of the holdings chart in the report spill and adds 1. ensureTabs writes the chart blocks and the anchor cells after both tabs exist, so their formulas read the report tab that the same run creates. The write of the answer writes no cell of the blocks and not the anchor cells. This file holds the state of the tab after ensureTabs: the layout version, the labels, the chart blocks, the anchor cells, and the format. The tab holds no dollar value.",
+  "note": "The answer of the concentration route and the values that the script computes from it. B3 holds the layout version. The script writes B1, B2, B5:B14, B28:B32, D5:N, P5:S, and the mix block U5:Z. It writes the unseen block AB5:AC, one row for each position with the weight of the lines of the class unknown that came through it. It writes the stock fund block AE5:AE, the own block AG5:AK of the rows that the report shows on a row of their own, and the group block AM5:AP of the other rows of the other part, one row for each class. It writes the rows of the lines from AR5, the direct weight of each row in column AZ, and one source column for each position from column BA, with the position id in row 4. A line gives one row for its stock part, one row for its other part, or both, and column AY names the part. The funds block D5:N holds each element of the funds of the answer with no heldBy and with an entered value other than false: each position or part whose fund entered through its holdings. The mix block holds one row for each fund of each mix that the request sent. A good refresh also writes its start time and its seconds into A16:B25, newest first, 10 rows at most. The company chart block IT4:JA104 holds the source of the company chart of the report tab. Each of its cells is a formula that reads the company table of the report spill. Row 4 holds the series names, and a header that shows an empty string marks a column with no series. The eachRow entry holds the one row of formulas that each of the 100 data rows holds. The anchor cell JC5 holds the row of the report tab where the company chart starts: it finds the header row of the company chart in the report spill and adds 1. The holdings chart block JE4:JF204 holds the source of the holdings chart. Each of its cells is a formula that reads the section Holdings of the report spill: the label of each holding group and its share of the portfolio, in the order of the table. The header of the share column shows an empty string when the table holds no group. The eachRow entry holds the one row of formulas that each of the 200 data rows holds. The anchor cell JH5 holds the row of the report tab where the holdings chart starts: it finds the header row of the holdings chart in the report spill and adds 1. ensureTabs writes the chart blocks and the anchor cells after both tabs exist, so their formulas read the report tab that the same run creates. The write of the answer writes no cell of the blocks and not the anchor cells. This file holds the state of the tab after ensureTabs: the layout version, the labels, the chart blocks, the anchor cells, and the format. The tab holds no dollar value.",
   "cells": [
     {
       "range": "A1:A2",
@@ -8,10 +8,10 @@
     },
     {
       "range": "A3:B3",
-      "values": [["layoutVersion", 12]]
+      "values": [["layoutVersion", 14]]
     },
     {
-      "range": "A4:A13",
+      "range": "A4:A14",
       "values": [
         ["measure"],
         ["lineCount"],
@@ -22,7 +22,8 @@
         ["notLookedThroughWeight"],
         ["weightSum"],
         ["weightDifference"],
-        ["unknownWeight"]
+        ["unknownWeight"],
+        ["preferredWeight"]
       ]
     },
     {
@@ -76,15 +77,15 @@
       "values": [["key", "name", "ticker", "lei", "class", "weight", "stockWeight", "part", "directWeight"]]
     },
     {
-      "range": "A14:B14",
+      "range": "A15:B15",
       "values": [["runStart", "seconds"]]
     },
     {
-      "range": "A26:B26",
+      "range": "A27:B27",
       "values": [["equity", "value"]]
     },
     {
-      "range": "A27:A31",
+      "range": "A28:A32",
       "values": [["weight"], ["lineCount"], ["top10Weight"], ["hhi"], ["effectiveCount"]]
     },
     {
@@ -224,21 +225,21 @@
         "background": "#f7f6f1"
       },
       {
-        "range": "A14:B14",
+        "range": "A15:B15",
         "bold": true,
         "background": "#f7f6f1"
       },
       {
-        "range": "A26:B26",
+        "range": "A27:B27",
         "bold": true,
         "background": "#f7f6f1"
       },
       {
-        "range": "A15:A24",
+        "range": "A16:A25",
         "numberFormat": "yyyy-mm-dd hh:mm:ss"
       },
       {
-        "range": "B15:B24",
+        "range": "B16:B25",
         "numberFormat": "0.000"
       },
       {
@@ -262,27 +263,27 @@
         "numberFormat": "0.00"
       },
       {
-        "range": "B9:B13",
-        "numberFormat": "0.000000"
-      },
-      {
-        "range": "B27",
+        "range": "B9:B14",
         "numberFormat": "0.000000"
       },
       {
         "range": "B28",
-        "numberFormat": "#,##0"
-      },
-      {
-        "range": "B29",
         "numberFormat": "0.000000"
       },
       {
+        "range": "B29",
+        "numberFormat": "#,##0"
+      },
+      {
         "range": "B30",
-        "numberFormat": "0.0"
+        "numberFormat": "0.000000"
       },
       {
         "range": "B31",
+        "numberFormat": "0.0"
+      },
+      {
+        "range": "B32",
         "numberFormat": "0.00"
       },
       {

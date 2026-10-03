@@ -69,6 +69,15 @@
  * position with parts and gets a synthetic answer in the shape of the route
  * with parts.
  *
+ * Runs 18 and 19 get synthetic answers in the shape of schema version 1.9.
+ * The answer of run 18 holds a held fund, a fund that did not enter, and a
+ * line of the class preferred. The answer of run 19 keeps 5 lines and adds
+ * the cap line other:lines. Run 16 gets the answer of run 1 in the shape of
+ * schema version 1.8, with no entered key and no preferredWeight. Run 20
+ * gets a synthetic answer with the line classes trust and cash of a direct
+ * position: a trust that the person holds, a trust in a fund mix, and a
+ * money market fund with no element of the funds block.
+ *
  * Run 1 sends one real request to the concentration route with the key of the
  * environment variable HOLDINGS_API_KEY. The request holds no parts. The other
  * runs send no request. The harness prints no part of the key.
@@ -184,6 +193,8 @@ const STOCK = "AAPL";
 const MONEY = "SPAXX";
 const PLAN_FUND = "Example Plan Collective Trust";
 const BOND = "912810ZZ1";
+const TRUST = "SPY";
+const MIX_TRUST = "GLD";
 const HOLDINGS_ROWS = [
   [FUND_A, "Example brokerage", 3000, "Example index fund A"],
   [FUND_B, "Example brokerage", 2000, "Example index fund B"],
@@ -220,6 +231,7 @@ const MEASURES = [
   "weightSum",
   "weightDifference",
   "unknownWeight",
+  "preferredWeight",
 ];
 const EQUITY = ["weight", "lineCount", "top10Weight", "hhi", "effectiveCount"];
 const FUND_FIELDS = [
@@ -335,9 +347,18 @@ const HOLDINGS_OPTIONS = {
 };
 
 /**
- * The first row of the equity block of the Concentration.Exposure tab.
+ * The header row and the first row of the run-time block of the
+ * Concentration.Exposure tab: one row under the last measure.
  */
-const EQUITY_ROW = 27;
+const RUN_HEADER = 5 + MEASURES.length;
+const RUN_ROW = RUN_HEADER + 1;
+
+/**
+ * The header row and the first row of the equity block of the
+ * Concentration.Exposure tab: one empty row under the run-time block.
+ */
+const EQUITY_HEADER = RUN_HEADER + 10 + 2;
+const EQUITY_ROW = EQUITY_HEADER + 1;
 
 /**
  * The cell of the Concentration.Exposure tab that holds the layout version,
@@ -366,6 +387,12 @@ const REPORT_ROW = 26;
  */
 const UNSEEN_TITLE = "Funds not looked through";
 const ADD_MIX_NOTE = "Add its fund mix: Concentration › Describe a fund";
+
+/**
+ * The text of the sidebar for a ticker that the fund route answers with
+ * not_a_fund: a company stock or a trust.
+ */
+const NOT_A_FUND = "A company stock or a trust, not a fund. It counts as one holding.";
 
 /**
  * The error of a failed assertion. The message names the assertion.
@@ -1225,16 +1252,18 @@ let offlineRequests = 0;
 /**
  * The invented holdings of the two index funds of the synthetic answer. Each
  * holding has a merge key, a name, a ticker, a class, and a percent of the
- * fund. Fund A holds stocks and cash. Fund B holds the stock and a bond of
- * company B, a bond of company C, and a held fund with a negative percent.
- * The percents of each fund add up to 100.
+ * fund. Fund A holds stocks, a preferred stock, and cash. Fund B holds the
+ * stock and a bond of company B, a bond of company C, and a held fund with a
+ * negative percent that did not enter. The percents of each fund add up to
+ * 100.
  */
 const OFFLINE_FUNDS = {
   [FUND_A]: [
     { key: "name:EXAMPLE COMPANY B", name: "Example Company B", ticker: null, class: "stock", pct: 85 },
     { key: "name:EXAMPLE COMPANY C", name: "Example Company C", ticker: null, class: "stock", pct: 5 },
     { key: `ticker:${STOCK}`, name: "Example company", ticker: STOCK, class: "stock", pct: 5 },
-    { key: "name:CASH", name: "Cash", ticker: null, class: "cash", pct: 5 },
+    { key: "name:CASH", name: "Cash", ticker: null, class: "cash", pct: 4 },
+    { key: "name:EXAMPLE PREFERRED D", name: "Example Preferred D", ticker: null, class: "preferred", pct: 1 },
   ],
   [FUND_B]: [
     { key: "name:EXAMPLE COMPANY B", name: "Example Company B", ticker: null, class: "stock", pct: 80 },
@@ -1245,6 +1274,26 @@ const OFFLINE_FUNDS = {
     { key: "name:EXAMPLE HELD FUND", name: "Example Held Fund", ticker: null, class: "fund", pct: -1 },
   ],
 };
+
+/**
+ * The invented series of each fund of the synthetic answer.
+ */
+const OFFLINE_SERIES = { [FUND_A]: "S000000901", [FUND_B]: "S000000902", [MONEY]: "S000000903" };
+
+/**
+ * The elements of the funds block of an answer that the funds block of the
+ * tab holds: each element with no heldBy whose entered value is not false.
+ * An element with no entered key entered.
+ */
+function topFundsOf(funds) {
+  return funds.filter((fund) => (fund.heldBy ?? null) === null && fund.entered !== false);
+}
+
+/**
+ * The cause of each fund of the synthetic answer that is in the store and
+ * did not enter through its holdings.
+ */
+const OFFLINE_NOT_ENTERED = { [MONEY]: "no_report" };
 
 /**
  * The line of each direct position of the synthetic answer. The bond and the
@@ -1259,22 +1308,44 @@ const OFFLINE_DIRECT = {
 };
 
 /**
+ * The direct lines and the funds that did not enter of a synthetic answer
+ * with the line classes trust and cash of a direct position. A trust gets
+ * the class trust and no stock weight. The money market fund gets the class
+ * cash and no element of the funds block.
+ */
+const TRUST_KINDS = {
+  direct: {
+    ...OFFLINE_DIRECT,
+    [MONEY]: { key: `ticker:${MONEY}`, name: "Example money market fund", ticker: MONEY, class: "cash" },
+    [TRUST]: { key: `ticker:${TRUST}`, name: "Example index trust", ticker: TRUST, class: "trust" },
+    [MIX_TRUST]: { key: `ticker:${MIX_TRUST}`, name: "Example metal trust", ticker: MIX_TRUST, class: "trust" },
+  },
+  notEntered: {},
+};
+
+/**
+ * The top 10 sum, the HHI, and the effective count of a list of weights,
+ * from the absolute share of each weight. Each is 0 when the absolute values
+ * sum to 0.
+ */
+function shareMeasures(weights) {
+  const total = weights.reduce((a, w) => a + Math.abs(w), 0);
+  if (total === 0) return { top10Weight: 0, hhi: 0, effectiveCount: 0 };
+  const shares = weights.map((w) => Math.abs(w) / total);
+  const squares = shares.reduce((a, share) => a + share * share, 0);
+  const top = [...shares].sort((a, b) => b - a).slice(0, 10);
+  return { top10Weight: top.reduce((a, b) => a + b, 0), hhi: squares * 10000, effectiveCount: 1 / squares };
+}
+
+/**
  * The equity block of a list of stock weights, or null when their sum is not
  * above 0.
  */
 function equityOf(stockWeights) {
   const weight = stockWeights.reduce((a, b) => a + b, 0);
   if (!(weight > 0)) return null;
-  const shares = stockWeights.filter((w) => w !== 0).map((w) => w / weight);
-  const squares = shares.reduce((a, share) => a + share * share, 0);
-  const top = [...shares].sort((a, b) => b - a).slice(0, 10);
-  return {
-    weight,
-    lineCount: shares.length,
-    top10Weight: top.reduce((a, b) => a + b, 0),
-    hhi: squares * 10000,
-    effectiveCount: 1 / squares,
-  };
+  const counted = stockWeights.filter((w) => w !== 0);
+  return { weight, lineCount: counted.length, ...shareMeasures(counted) };
 }
 
 /**
@@ -1305,25 +1376,54 @@ function overlapsOf(funds, lines) {
 
 /**
  * A synthetic answer of the route for a list of positions, in the shape of a
- * real answer of schema version 1.8. Each name and each number is invented.
+ * real answer of schema version 1.9. Each name and each number is invented.
  * A position of OFFLINE_FUNDS enters through its holdings and gets a
- * residual line. Each other position enters as one line of OFFLINE_DIRECT.
- * Holdings with one key share one line. The line of company B holds a stock
- * from both funds and a bond from fund B. The line of company C holds a
- * stock from fund A and a bond from fund B.
+ * residual line of the class cash. Each other position enters as one line of
+ * OFFLINE_DIRECT. Holdings with one key share one line. The line of company
+ * B holds a stock from both funds and a bond from fund B. The line of
+ * company C holds a stock from fund A and a bond from fund B. Each line
+ * holds classWeights.
+ *
+ * The funds block holds an element for each fund that entered, an element
+ * with heldBy set for each held fund of the class fund, and an element with
+ * entered false for each fund of OFFLINE_NOT_ENTERED.
  *
  * A position with parts enters through each part at the weight of the
  * position times the weight of the part. A fund part gets an element of the
  * funds block with its partWeight. The rest of a mix under 100% enters as one
  * line of the class unknown. Each contribution goes under the position id.
  * The overlaps block counts each position one time.
+ *
+ * When the answer holds more than `maxLines` lines, the lines block keeps
+ * the `maxLines` lines with the largest absolute weight, and one cap line
+ * with the key other:lines holds the sums of the other lines. The route
+ * keeps 2,000 lines.
+ *
+ * `kinds` holds the direct line of each ticker and the cause of each fund
+ * that did not enter. TRUST_KINDS gives the classes trust and cash of a
+ * direct position.
  */
-function offlineAnswer(positions) {
+function offlineAnswer(
+  positions,
+  maxLines = 2000,
+  kinds = { direct: OFFLINE_DIRECT, notEntered: OFFLINE_NOT_ENTERED },
+) {
   const byKey = new Map();
+  let lookedThrough = 0;
   const add = (holding, id, weight) => {
     if (!byKey.has(holding.key)) {
       const { key, name, ticker } = holding;
-      byKey.set(key, { key, name, ticker, weight: 0, sources: {}, stockWeight: 0, stockSources: {}, sizes: {} });
+      byKey.set(key, {
+        key,
+        name,
+        ticker,
+        weight: 0,
+        sources: {},
+        stockWeight: 0,
+        stockSources: {},
+        classWeights: {},
+        sizes: {},
+      });
     }
     const line = byKey.get(holding.key);
     line.weight += weight;
@@ -1332,10 +1432,26 @@ function offlineAnswer(positions) {
       line.stockWeight += weight;
       line.stockSources[id] = (line.stockSources[id] ?? 0) + weight;
     }
+    line.classWeights[holding.class] = (line.classWeights[holding.class] ?? 0) + weight;
     line.sizes[holding.class] = (line.sizes[holding.class] ?? 0) + Math.abs(weight);
   };
   const funds = [];
   const fundPositions = [];
+  /**
+   * The fields of an element of the funds block that adds nothing to the
+   * counts: a held fund or a fund that did not enter.
+   */
+  const notEntered = (reason) => ({
+    entered: false,
+    notEnteredReason: reason,
+    reportDate: null,
+    accessionNumber: null,
+    holdingCount: 0,
+    coveredWeight: 0,
+    mergedByTicker: 0,
+    mergedByLei: 0,
+    mergedByName: 0,
+  });
   /**
    * Enter one ticker at a weight under a position id. The result is true
    * when the ticker is a fund of OFFLINE_FUNDS.
@@ -1343,22 +1459,43 @@ function offlineAnswer(positions) {
   const enter = (id, ticker, weight, partWeight) => {
     const holdings = OFFLINE_FUNDS[ticker];
     if (holdings === undefined) {
-      const direct = OFFLINE_DIRECT[ticker] ?? { key: `ticker:${ticker}`, name: ticker, ticker, class: "unknown" };
+      const direct = kinds.direct[ticker] ?? { key: `ticker:${ticker}`, name: ticker, ticker, class: "unknown" };
       add(direct, id, weight);
+      if (ticker in kinds.notEntered) {
+        funds.push({
+          id,
+          ticker,
+          partWeight,
+          seriesId: OFFLINE_SERIES[ticker],
+          name: direct.name,
+          heldBy: null,
+          weight,
+          ...notEntered(kinds.notEntered[ticker]),
+        });
+      }
       return false;
     }
-    for (const holding of holdings) add(holding, id, (weight * holding.pct) / 100);
+    for (const holding of holdings) {
+      add(holding, id, (weight * holding.pct) / 100);
+      if (holding.class !== "fund") lookedThrough += (weight * holding.pct) / 100;
+    }
     const covered = holdings.reduce((a, holding) => a + holding.pct, 0) / 100;
     const residual = {
       key: `residual:${ticker}`,
-      name: `${ticker} (not looked through)`,
+      name: "Cash and other net assets",
       ticker: null,
-      class: "other",
+      class: "cash",
     };
     add(residual, id, weight * Math.max(0, 1 - covered));
     funds.push({
       id,
       ticker,
+      partWeight,
+      seriesId: OFFLINE_SERIES[ticker],
+      name: `Example index fund ${ticker}`,
+      heldBy: null,
+      entered: true,
+      notEnteredReason: null,
       reportDate: "2026-06-30",
       accessionNumber: `0000000000-26-00000${funds.length + 1}`,
       holdingCount: holdings.length,
@@ -1367,8 +1504,19 @@ function offlineAnswer(positions) {
       mergedByTicker: 1,
       mergedByLei: 0,
       mergedByName: holdings.length - 1,
-      partWeight,
     });
+    for (const holding of holdings.filter((h) => h.class === "fund")) {
+      funds.push({
+        id,
+        ticker: holding.ticker,
+        partWeight,
+        seriesId: null,
+        name: holding.name,
+        heldBy: OFFLINE_SERIES[ticker],
+        weight: (weight * holding.pct) / 100,
+        ...notEntered("unknown_series"),
+      });
+    }
     return true;
   };
   for (const position of positions) {
@@ -1397,30 +1545,59 @@ function offlineAnswer(positions) {
     sources: line.sources,
     stockWeight: line.stockWeight,
     stockSources: line.stockSources,
+    classWeights: line.classWeights,
   }));
   lines.sort((a, b) => b.weight - a.weight || (a.key < b.key ? -1 : 1));
   const weights = lines.map((line) => line.weight);
   const sum = weights.reduce((a, b) => a + b, 0);
-  const squares = weights.reduce((a, w) => a + w * w, 0);
-  const lookedThrough = funds.reduce((a, fund) => a + fund.coveredWeight, 0);
+  const seen = lines.filter((line) => line.class !== "unknown").map((line) => line.weight);
+  const measures = {
+    lineCount: lines.length,
+    ...shareMeasures(seen),
+    lookedThroughWeight: lookedThrough,
+    notLookedThroughWeight: sum - lookedThrough,
+    weightSum: sum,
+    weightDifference: sum - 1,
+    unknownWeight: lines.filter((line) => line.class === "unknown").reduce((a, line) => a + line.weight, 0),
+    preferredWeight: lines.reduce((a, line) => a + (line.classWeights.preferred ?? 0), 0),
+    equity: equityOf(lines.map((line) => line.stockWeight)),
+  };
+  const overlaps = overlapsOf(fundPositions, lines);
+  let kept = lines;
+  if (lines.length > maxLines) {
+    const ranked = [...lines].sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight) || (a.key < b.key ? -1 : 1));
+    const keep = new Set(ranked.slice(0, maxLines));
+    const rest = lines.filter((line) => !keep.has(line));
+    const total = (pick) => {
+      const map = {};
+      for (const line of rest) {
+        for (const [name, value] of Object.entries(pick(line))) map[name] = (map[name] ?? 0) + value;
+      }
+      return map;
+    };
+    kept = [
+      ...lines.filter((line) => keep.has(line)),
+      {
+        key: "other:lines",
+        name: "Other lines",
+        ticker: null,
+        lei: null,
+        class: "other",
+        weight: rest.reduce((a, line) => a + line.weight, 0),
+        sources: total((line) => line.sources),
+        stockWeight: rest.reduce((a, line) => a + line.stockWeight, 0),
+        stockSources: total((line) => line.stockSources),
+        classWeights: total((line) => line.classWeights),
+      },
+    ];
+  }
   return {
-    measures: {
-      lineCount: lines.length,
-      top10Weight: weights.slice(0, 10).reduce((a, b) => a + b, 0),
-      hhi: squares * 10000,
-      effectiveCount: 1 / squares,
-      lookedThroughWeight: lookedThrough,
-      notLookedThroughWeight: sum - lookedThrough,
-      weightSum: sum,
-      weightDifference: sum - 1,
-      unknownWeight: lines.filter((line) => line.class === "unknown").reduce((a, line) => a + line.weight, 0),
-      equity: equityOf(lines.map((line) => line.stockWeight)),
-    },
+    measures,
     funds,
-    overlaps: overlapsOf(fundPositions, lines),
-    lines,
+    overlaps,
+    lines: kept,
     meta: {
-      schemaVersion: "1.8",
+      schemaVersion: "1.9",
       source: "Invented data of the offline run",
       pctValueUnit: "percent of net assets",
       disclaimer: "Invented data. Not investment advice.",
@@ -1943,13 +2120,13 @@ function checkHoldingsChart(name) {
 }
 
 /**
- * The rows of the run-time block A15:B24 of the Exposure tab, with each
+ * The rows of the run-time block A16:B25 of the Exposure tab, with each
  * start time in milliseconds.
  */
 function runRows() {
   return book
     .tab(EXPOSURE_TAB)
-    .block(15, 1, 10, 2)
+    .block(RUN_ROW, 1, 10, 2)
     .map(([start, seconds]) => [isDate(start) ? start.getTime() : start, seconds]);
 }
 
@@ -2175,8 +2352,10 @@ function partRowsOf(sheet, rows, count) {
  * the funds that hold a stock. The function reads the lines block, the
  * sources block with MAX_POSITIONS columns, the id row, the funds block, and
  * the mix block, and it follows the steps of those formulas: dw, keep, came,
- * cls, gw, gn, gf, uid, uu, fid, and f. The script writes these values into
- * the tab, and the harness compares the two.
+ * cls, gw, gn, gf, uid, uu, fid, and f. The other part of the cap line,
+ * with the key other:lines, also gets a row of its own. The own row of a
+ * residual line holds the fund ticker of its key as the name. The script
+ * writes these values into the tab, and the harness compares the two.
  */
 function formulaReference(sheet) {
   const all = sheet.getMaxRows() - 4;
@@ -2201,11 +2380,12 @@ function formulaReference(sheet) {
   );
   const dw = rows.map((cells, r) => pw[r] - header.reduce((sum, _, j) => sum + num(source(cells, j)) * isf[j], 0));
   const residual = (cells) => String(field(cells, "key")).startsWith("residual:");
+  const cap = (cells) => field(cells, "key") === "other:lines";
   const own = rows.map(
     (cells, r) =>
       part(cells) === "other" &&
       field(cells, "class") !== "stock" &&
-      (residual(cells) || Math.abs(dw[r]) > 1e-12 || field(cells, "class") === "unknown"),
+      (residual(cells) || cap(cells) || Math.abs(dw[r]) > 1e-12 || field(cells, "class") === "unknown"),
   );
   const grp = rows.map((cells, r) => part(cells) === "other" && !own[r]);
   const came = (cells) => header.filter((h, j) => h !== "" && source(cells, j) !== "" && source(cells, j) !== 0);
@@ -2214,7 +2394,7 @@ function formulaReference(sheet) {
     .filter(([cells, r]) => own[r] && !(residual(cells) && pw[r] === 0))
     .map(([cells, r]) => [
       field(cells, "key"),
-      field(cells, "name"),
+      residual(cells) ? String(field(cells, "key")).slice("residual:".length) : field(cells, "name"),
       field(cells, "class"),
       pw[r],
       came(cells).join(", "),
@@ -2318,7 +2498,7 @@ function checkComputed(sheet, name, partCount) {
  */
 function topLastOf(sheet, computed) {
   return Math.max(
-    31,
+    EQUITY_ROW + EQUITY.length - 1,
     ...[FUND_AT, OVERLAP_AT, MIX_AT].map((column) => 4 + blockRows(sheet, column, 1).length),
     ...[computed.unseen, computed.stockFunds, computed.own, computed.groups].map((rows) => 4 + rows.length),
   );
@@ -2661,10 +2841,10 @@ function main() {
   const checkRecorded = (name, times) => {
     const rows = runRows();
     const [start, seconds] = rows[0];
-    check(start >= times.before && start <= times.after, `${name}: A15 holds the start time of the run`);
+    check(start >= times.before && start <= times.after, `${name}: A${RUN_ROW} holds the start time of the run`);
     check(
       typeof seconds === "number" && seconds >= 0 && seconds <= (times.after - times.before) / 1000 + 1e-9,
-      `${name}: B15 holds the seconds of the run (${seconds})`,
+      `${name}: B${RUN_ROW} holds the seconds of the run (${seconds})`,
     );
     runStarts.unshift(start);
     checkBlock(name);
@@ -2832,7 +3012,38 @@ function main() {
 
   console.log("\n== Values that the script computes from an answer");
   const computeIds = ["F", "S", "P", "M"];
-  const computeFunds = [{ id: "F" }, { id: "M" }, { id: "F" }];
+  /**
+   * The funds block of the hand answer. F and M entered through their
+   * holdings. F also holds a held fund that entered and one that did not. S
+   * names a fund that did not enter, so S is a direct position. An element
+   * with no entered key and no heldBy key entered.
+   */
+  const computeFunds = [
+    { id: "F", ticker: "F", heldBy: null, entered: true, accessionNumber: "0000000000-26-000001" },
+    { id: "M" },
+    { id: "F", ticker: "F2", heldBy: null, entered: true, accessionNumber: "0000000000-26-000002" },
+    { id: "F", ticker: null, heldBy: "S000000001", entered: true, accessionNumber: "0000000000-26-000003" },
+    { id: "F", ticker: null, heldBy: "S000000001", entered: false, notEnteredReason: "unknown_series" },
+    { id: "S", ticker: "S", heldBy: null, entered: false, notEnteredReason: "no_report", accessionNumber: null },
+  ];
+  const computeRows = context.fundRows(computeFunds);
+  check(
+    JSON.stringify(computeRows.map((cells) => cells.slice(0, 2))) ===
+      JSON.stringify([
+        ["F", "F"],
+        ["M", ""],
+        ["F", "F2"],
+      ]) && JSON.stringify(context.fundIds(computeFunds)) === JSON.stringify(["F", "M"]),
+    "fundRows and fundIds keep each element with no heldBy that entered, and an element with no entered key " +
+      `(${JSON.stringify(computeRows.map((cells) => cells[0]))})`,
+  );
+  const nullRow = context.fundRows([{ id: "N", ticker: null, accessionNumber: null, reportDate: null }])[0];
+  check(
+    nullRow[FUND_FIELDS.indexOf("ticker")] === "" &&
+      nullRow[FUND_FIELDS.indexOf("accessionNumber")] === "" &&
+      nullRow[FUND_FIELDS.indexOf("reportDate")] === "",
+    "fundRows writes an empty cell for a null ticker, a null accessionNumber, and a null reportDate",
+  );
   const lineOf = (key, kind, weight, sources, stockWeight = 0, stockSources = {}) => ({
     key,
     name: `Name of ${key}`,
@@ -2851,30 +3062,34 @@ function main() {
     lineOf("name:TBILL", "treasury", 0.02, { M: 0.02 }),
     lineOf("name:CASH2", "cash", 0.01, { F: 0.01 }),
     lineOf("id:P", "unknown", 0.3, { P: 0.3 }),
-    lineOf("residual:F", "other", 0, { F: 0 }),
-    lineOf("residual:M", "other", 0.01, { M: 0.01 }),
+    lineOf("residual:F", "cash", 0, { F: 0 }),
+    lineOf("residual:M", "cash", 0.01, { M: 0.01 }),
     lineOf("id:M", "unknown", 0.11, { M: 0.11 }),
     lineOf("name:Q", "unknown", 0.02, { F: 0.02 }),
     lineOf("lei:Y", "stock", 0.03, { F: 0.03 }, 0.02, { F: 0.02 }),
+    lineOf("lei:PREF", "preferred", 0.004, { F: 0.004 }),
+    lineOf("other:lines", "other", 0.006, { F: 0.006 }, 0.004, { F: 0.004 }),
   ];
   const computeParts = context.partRows(computeLines, computeIds);
   const computeDirect = context.directWeights(computeParts, computeIds, computeFunds);
-  const wantDirect = [0.15, 0.04, 0, 0, 0, 0.3, 0, 0, 0, 0, 0, 0];
+  const wantDirect = [0.15, 0.04, 0, 0, 0, 0.3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   check(
     computeDirect.length === wantDirect.length && computeDirect.every((v, r) => Math.abs(v - wantDirect[r]) < 1e-12),
-    `directWeights gives the part weight minus the cells of the funds F and M (${JSON.stringify(computeDirect)})`,
+    "directWeights gives the part weight minus the cells of the funds F and M, and keeps the cells of S, " +
+      `a fund that did not enter (${JSON.stringify(computeDirect)})`,
   );
   const computeOwn = context.ownRows(computeParts, computeIds, computeDirect);
   check(
     sameRows(computeOwn, [
       ["name:BOND", "Name of name:BOND", "other", 0.1, "F, S"],
       ["id:P", "Name of id:P", "unknown", 0.3, "P"],
-      ["residual:M", "Name of residual:M", "other", 0.01, "M"],
+      ["residual:M", "M", "cash", 0.01, "M"],
       ["id:M", "Name of id:M", "unknown", 0.11, "M"],
       ["name:Q", "Name of name:Q", "unknown", 0.02, "F"],
+      ["other:lines", "Name of other:lines", "other", 0.006 - 0.004, "F"],
     ]),
-    "ownRows gives a direct line, each line of the class unknown, and a residual line above 0, in their order " +
-      `(${JSON.stringify(computeOwn)})`,
+    "ownRows gives a direct line, each line of the class unknown, a residual line above 0 with the fund ticker as " +
+      `the name, and the other part of the cap line, in their order (${JSON.stringify(computeOwn)})`,
   );
   const computeGroups = context.groupRows(computeParts, computeIds, computeDirect);
   check(
@@ -2882,9 +3097,10 @@ function main() {
       ["cash", 0.05 + 0.01, 2, "F, M"],
       ["treasury", 0.02, 1, "M"],
       ["stock", 0.03 - 0.02, 1, "F"],
+      ["preferred", 0.004, 1, "F"],
     ]),
     "groupRows gives each class of the other rows with no row of their own, with the weight, the count, " +
-      `and the positions, and skips a residual line of 0 (${JSON.stringify(computeGroups)})`,
+      `and the positions, a group of the class preferred, and skips a residual line of 0 (${JSON.stringify(computeGroups)})`,
   );
   const computeMixes = [["M", 0.2, 46000, "VOO", 1, false]];
   const computeUnseen = context.unseenRows(computeParts, computeIds, computeMixes);
@@ -2900,12 +3116,13 @@ function main() {
   const computeStock = context.stockFundRows(computeParts, computeIds, computeFunds);
   check(
     JSON.stringify(computeStock) === JSON.stringify([["F"]]),
-    `stockFundRows gives each fund one time, and no fund whose stock cells add up to 0 (${JSON.stringify(computeStock)})`,
+    "stockFundRows gives each fund one time, no fund whose stock cells add up to 0, and no fund that did not " +
+      `enter (${JSON.stringify(computeStock)})`,
   );
   const computeSheet = new FakeSheet(EXPOSURE_TAB, 40, SOURCE_AT + MAX_POSITIONS - 1, []);
   computeSheet.grid[3].splice(SOURCE_AT - 1, computeIds.length, ...computeIds);
-  computeFunds.forEach((fund, r) => {
-    computeSheet.grid[4 + r][FUND_AT - 1] = fund.id;
+  computeRows.forEach((cells, r) => {
+    computeSheet.grid[4 + r][FUND_AT - 1] = cells[0];
   });
   computeSheet.grid[4][MIX_AT - 1] = "M";
   computeParts.forEach((cells, r) => {
@@ -3158,9 +3375,10 @@ function main() {
   );
   for (const text of [
     "thr,$B$23,",
-    'sel,ARRAYFORMULA((LP="stock")*ISNUMBER(LX)*(LX>=thr)),',
-    'rsel,ARRAYFORMULA((LP="stock")*ISNUMBER(LX)*(LX<thr)),',
-    'rf,MAP(f,LAMBDA(x,IFERROR(SUMIFS(INDEX(LS,0,XMATCH(x,LH)),LP,"stock",LX,"<"&thr),0))),',
+    'sel,ARRAYFORMULA((LP="stock")*ISNUMBER(LX)*(LX>=thr)*(LK<>"other:lines")),',
+    'rsel,ARRAYFORMULA((LP="stock")*ISNUMBER(LX)*((LX<thr)+(LK="other:lines")>0)),',
+    'rc,COUNTIFS(LP,"stock",LX,"<"&thr,LX,"<>0",LK,"<>other:lines"),',
+    "rf,MAP(f,LAMBDA(x,IFERROR(SUM(FILTER(INDEX(LS,0,XMATCH(x,LH)),rsel)),0))),",
     "psel,ARRAYFORMULA(ISNUMBER(po)*(po>=$B$24)),",
     "IF(ABS(gw*tot)>=100,1,0)",
   ]) {
@@ -3346,7 +3564,7 @@ function main() {
     report
       .cell(SPILL_CELL)
       .includes(
-        ` yours,\n "",\n "${HOLDINGS_HEADING}",\n MAKEARRAY(${BAND_ROWS},1,LAMBDA(i,j,"")),\n "A commodity trust or a crypto trust, such as GLD or IBIT, counts as one security.",`,
+        ` yours,\n "",\n "${HOLDINGS_HEADING}",\n MAKEARRAY(${BAND_ROWS},1,LAMBDA(i,j,"")),\n "A trust or a closed-end fund, such as SPY, GLD, or IBIT, is not a company. Other holdings shows it as one line.",`,
       ),
     `${SPILL_CELL} puts the header row of the holdings chart and a band of ${BAND_ROWS} blank rows between the ` +
       "Total row of the section Holdings and the trust note",
@@ -3542,7 +3760,7 @@ function main() {
   );
 
   /**
-   * The values that B27:B31 must hold for an equity block. A null block
+   * The values that B28:B32 must hold for an equity block. A null block
    * gives five empty cells.
    */
   const equityWant = (equity) => EQUITY.map((name) => equity?.[name] ?? "");
@@ -3552,13 +3770,19 @@ function main() {
     `B${EQUITY_ROW}:B${EQUITY_ROW + EQUITY.length - 1} holds the equity measures, in the order ${EQUITY.join(", ")}`,
   );
 
-  const funds = answer.funds;
+  const funds = topFundsOf(answer.funds);
   const fundCells = x.block(5, FUND_AT, funds.length, FUND_FIELDS.length);
   funds.forEach((fund, i) => {
     FUND_FIELDS.forEach((name, c) => {
       check(fundCells[i][c] === (fund[name] ?? ""), `D${5 + i}:N holds ${name} of fund ${i}`);
     });
   });
+  check(
+    blockRows(x, FUND_AT, 1).length === funds.length,
+    `D5:N holds the ${funds.length} funds that entered, and none of the ` +
+      `${answer.funds.length - funds.length} held funds and funds that did not enter`,
+  );
+  console.log(`  The funds block of the answer holds ${answer.funds.length} elements, and D5:N holds ${funds.length}.`);
   check(
     x.block(5, MIX_AT, x.getMaxRows() - 4, MIX_FIELDS.length).every((c) => c.every((v) => v === "")),
     "the mix block U5:Z is empty when no holding has a mix",
@@ -3692,8 +3916,9 @@ function main() {
   const flushes = afterFetch.map((e, n) => (e.op === "flush" ? n : -1)).filter((n) => n >= 0);
   const setAt = afterFetch.map((e, n) => (e.op === "setValues" ? n : -1)).filter((n) => n >= 0);
   check(
-    writeRanges[2] === "1,2,2,1" && writeRanges[3] === "15,1,10,2",
-    `the status write B1:B2 comes before the run-time write A15:B24 (${writeRanges.slice(2).join("; ")})`,
+    writeRanges[2] === "1,2,2,1" && writeRanges[3] === `${RUN_ROW},1,10,2`,
+    `the status write B1:B2 comes before the run-time write A${RUN_ROW}:B${RUN_ROW + 9} ` +
+      `(${writeRanges.slice(2).join("; ")})`,
   );
   check(
     flushes.length === 3 &&
@@ -3747,7 +3972,10 @@ function main() {
   const plan = lines.find((l) => l.sources && PLAN_FUND in l.sources);
   check(plan?.class === "unknown", `the plan fund line has the class unknown (${plan?.class})`);
   const money = lines.find((l) => l.sources && MONEY in l.sources);
-  check(money?.class === "fund", `the money market fund line has the class fund (${money?.class})`);
+  check(
+    money?.class === "fund" || money?.class === "cash",
+    `the money market fund line has the class fund or the class cash (${money?.class})`,
+  );
 
   console.log("\n== Run time and chart of run 1");
   checkRecorded("run 1", runOne);
@@ -3766,8 +3994,11 @@ function main() {
     `  chart at A${oneChart.anchor}; ranges ${drawn.ranges.map((r) => `${r.row},${r.column},${r.rows},${r.columns}`).join("; ")}`,
   );
   console.log(`  colors ${drawn.colors.join(", ")}`);
-  check(x.cell("A14") === "runStart" && x.cell("B14") === "seconds", "the header of the run-time block stays");
-  console.log(`  A15: ${new Date(runRows()[0][0]).toISOString()}; B15: ${runRows()[0][1]} seconds`);
+  check(
+    x.cell(`A${RUN_HEADER}`) === "runStart" && x.cell(`B${RUN_HEADER}`) === "seconds",
+    "the header of the run-time block stays",
+  );
+  console.log(`  A${RUN_ROW}: ${new Date(runRows()[0][0]).toISOString()}; B${RUN_ROW}: ${runRows()[0][1]} seconds`);
 
   const partHeader = [...LINE_FIELDS, "part", ...ids.map((id) => id.slice(0, 12))];
   console.log("\nGrid of Concentration.Exposure after run 1:", `${x.getMaxRows()} rows, ${x.getMaxColumns()} columns.`);
@@ -3786,12 +4017,12 @@ function main() {
     partHeader,
     partCells.filter((cells) => directKeys.has(cells[0])),
   );
-  console.log("\nMeasures, B5:B13:");
+  console.log(`\nMeasures, B5:B${4 + MEASURES.length}:`);
   table(
     ["measure", "value"],
     MEASURES.map((name, i) => [name, measures[i]]),
   );
-  console.log("\nEquity measures, B27:B31:");
+  console.log(`\nEquity measures, B${EQUITY_ROW}:B${EQUITY_ROW + EQUITY.length - 1}:`);
   table(
     ["equity", "value"],
     EQUITY.map((name, i) => [name, equityCells(x)[i]]),
@@ -4148,9 +4379,12 @@ function main() {
   check(at(4, SOURCE_AT + 39) === "T039", "the column of position 40 holds the id T039");
   check(
     equityCells(x).every((value) => value === ""),
-    "B27:B31 is empty when the answer holds no equity block",
+    `B${EQUITY_ROW}:B${EQUITY_ROW + EQUITY.length - 1} is empty when the answer holds no equity block`,
   );
-  check(x.cell("A26") === "equity" && x.cell("B26") === "value", "the header of the equity block stays");
+  check(
+    x.cell(`A${EQUITY_HEADER}`) === "equity" && x.cell(`B${EQUITY_HEADER}`) === "value",
+    "the header of the equity block stays",
+  );
   check(
     x.block(5, OVERLAP_AT, x.getMaxRows() - 4, 4).every((c) => c.every((v) => v === "")),
     "P5:S is empty when the answer holds no pair",
@@ -4378,11 +4612,11 @@ function main() {
   );
   const known = (seconds) => {
     const sheet = new FakeSheet(EXPOSURE_TAB, 30, 4, []);
-    sheet.grid[13][0] = "runStart";
-    sheet.grid[13][1] = "seconds";
+    sheet.grid[RUN_HEADER - 1][0] = "runStart";
+    sheet.grid[RUN_HEADER - 1][1] = "seconds";
     seconds.forEach((value, n) => {
-      sheet.grid[14 + n][0] = new Date(Date.UTC(2026, 0, 10 - n));
-      sheet.grid[14 + n][1] = value;
+      sheet.grid[RUN_HEADER + n][0] = new Date(Date.UTC(2026, 0, 10 - n));
+      sheet.grid[RUN_HEADER + n][1] = value;
     });
     return sheet;
   };
@@ -4405,7 +4639,10 @@ function main() {
     formulaRows.push([c.name, c.seconds.join(", ") || "(none)", JSON.stringify(last), JSON.stringify(average)]);
   }
   const recorded = runRows().map(([, seconds]) => seconds);
-  check(near(calculate(lastFormula, x), recorded[0]), "B9 gives B15 of the Exposure tab after eleven good runs");
+  check(
+    near(calculate(lastFormula, x), recorded[0]),
+    `B9 gives B${RUN_ROW} of the Exposure tab after eleven good runs`,
+  );
   check(
     near(calculate(averageFormula, x), recorded.reduce((a, b) => a + b, 0) / 10),
     "B10 gives the average of the 10 kept runs of the Exposure tab",
@@ -4455,7 +4692,10 @@ function main() {
   check(wordy.length === 0, `no text of the report holds an API word (${wordy.join(" | ")})`);
   const spill = report.cell(SPILL_CELL);
   const stockWords = reportTexts.filter(
-    (text) => /\bstocks?\b/i.test(text) && text !== '"stock"' && text !== '"Bonds of companies whose stock you hold"',
+    (text) =>
+      /\bstocks?\b/i.test(text) &&
+      text !== '"stock"' &&
+      text !== '"Bonds and other securities of companies whose stock you hold"',
   );
   check(
     stockWords.length === 0,
@@ -4472,7 +4712,7 @@ function main() {
     '{"Holding","Ticker","Accounts","Value","% of portfolio"},',
     "\n yours,\n",
     `"${HOLDINGS_HEADING}",`,
-    '"A commodity trust or a crypto trust, such as GLD or IBIT, counts as one security.",',
+    '"A trust or a closed-end fund, such as SPY, GLD, or IBIT, is not a company. Other holdings shows it as one line.",',
     'HSTACK({"Rank","Company","Ticker","Value","% of portfolio","","Direct"},TRANSPOSE(f)),',
     "top,rest,",
     '"Fund overlap",',
@@ -4542,7 +4782,7 @@ function main() {
     if (ticker === FUND_A) {
       return fakeResponse(200, JSON.stringify({ fund: { ticker: FUND_A, seriesName: "EXAMPLE INDEX FUND A" } }));
     }
-    if (ticker === STOCK) return error("not_a_fund");
+    if (ticker === STOCK || ticker === TRUST) return error("not_a_fund");
     if (ticker === "QQQQX") return error("fund_not_found");
     return fakeResponse(503, "busy");
   };
@@ -4562,9 +4802,12 @@ function main() {
     "the check sends the key of the person alone",
   );
   check(
-    JSON.stringify(context.lookupFund("aapl")) ===
-      JSON.stringify({ ok: true, ticker: STOCK, text: "A company stock. It counts as that stock." }),
-    "a company ticker shows that it counts as a stock",
+    JSON.stringify(context.lookupFund("aapl")) === JSON.stringify({ ok: true, ticker: STOCK, text: NOT_A_FUND }),
+    "a company ticker shows that it counts as one holding",
+  );
+  check(
+    JSON.stringify(context.lookupFund("spy")) === JSON.stringify({ ok: true, ticker: TRUST, text: NOT_A_FUND }),
+    "a trust ticker shows that it counts as one holding",
   );
   check(
     JSON.stringify(context.lookupFund("qqqqx")) ===
@@ -4587,7 +4830,7 @@ function main() {
     "with no key, the check names Set API key and sends no request",
   );
   state.userProperties.set(KEY_PROPERTY, API_KEY);
-  check(state.fetchCalls.length === fetches + 4, "the ticker checks send four requests");
+  check(state.fetchCalls.length === fetches + 5, "the ticker checks send five requests");
   check(
     state.log.slice(logFrom).every((e) => e.sheet === undefined),
     "the sidebar data and the ticker check change no tab",
@@ -4759,7 +5002,8 @@ function main() {
       Math.abs(mixAnswer.measures.unknownWeight - unknownLines.reduce((a, l) => a + l.weight, 0)) < 1e-9,
     "unknownWeight is the sum of the weights of the lines of the class unknown",
   );
-  const planFunds = mixAnswer.funds.filter((f) => f.id === PLAN_FUND);
+  const mixTop = topFundsOf(mixAnswer.funds);
+  const planFunds = mixTop.filter((f) => f.id === PLAN_FUND);
   check(
     JSON.stringify(planFunds.map((f) => f.ticker).sort()) === JSON.stringify([FUND_A, FUND_B].sort()),
     "the funds block holds one element for each fund of the mix, under the holding id, and none for the stock",
@@ -4772,7 +5016,7 @@ function main() {
     "each element of a fund of the mix holds its share and the weight of the holding times the share",
   );
   check(
-    mixAnswer.funds.filter((f) => f.id !== PLAN_FUND).every((f) => f.partWeight === null),
+    mixTop.filter((f) => f.id !== PLAN_FUND).every((f) => f.partWeight === null),
     "each fund that is not in a mix holds partWeight null",
   );
   const restLine = mixAnswer.lines.find((l) => l.key === `id:${PLAN_FUND}`);
@@ -4805,9 +5049,9 @@ function main() {
     "the overlaps block gives one pair for each pair of holdings, the holding with a mix too",
   );
   check(x.cell("B13") === mixAnswer.measures.unknownWeight, "B13 holds unknownWeight");
-  const fundsNow = x.block(5, FUND_AT, mixAnswer.funds.length, FUND_FIELDS.length);
+  const fundsNow = x.block(5, FUND_AT, mixTop.length, FUND_FIELDS.length);
   check(
-    mixAnswer.funds.every((f, n) => fundsNow[n][FUND_FIELDS.length - 1] === (f.partWeight ?? "")),
+    mixTop.every((f, n) => fundsNow[n][FUND_FIELDS.length - 1] === (f.partWeight ?? "")),
     "column N holds partWeight, and it is empty for a fund that is not in a mix",
   );
   const serial = context.daySerial(todayText);
@@ -4847,11 +5091,15 @@ function main() {
     planFunds.map((f) => [f.id, f.ticker, f.partWeight, f.weight]),
   );
 
-  console.log("\n== Run 16: an answer with no unknownWeight and no partWeight");
+  console.log("\n== Run 16: an answer with no unknownWeight, no preferredWeight, no partWeight, and no entered");
   state.documentProperties.clear();
   const oldShape = JSON.parse(liveText);
   delete oldShape.measures.unknownWeight;
-  for (const fund of oldShape.funds) delete fund.partWeight;
+  delete oldShape.measures.preferredWeight;
+  oldShape.funds = topFundsOf(oldShape.funds);
+  for (const fund of oldShape.funds) {
+    for (const name of ["partWeight", "heldBy", "entered", "notEnteredReason"]) delete fund[name];
+  }
   state.fetchHandler = () => fakeResponse(200, JSON.stringify(oldShape));
   logFrom = state.log.length;
   pause(2);
@@ -4860,6 +5108,11 @@ function main() {
   checkRecorded("run 16", runOld);
   checkNoTabChange(reportState, logFrom, "run 16");
   check(x.cell("B13") === "", "B13 is empty when the answer holds no unknownWeight");
+  check(x.cell("B14") === "", "B14 is empty when the answer holds no preferredWeight");
+  check(
+    blockRows(x, FUND_AT, 1).length === oldShape.funds.length,
+    `the funds block holds each of the ${oldShape.funds.length} funds with no entered key and no heldBy key`,
+  );
   check(
     calculate(report.cell(COVERAGE_CELL), x) === "",
     `${COVERAGE_CELL} shows no coverage label when the answer holds no unknownWeight`,
@@ -4948,6 +5201,207 @@ function main() {
     "run 17: the holdings chart anchors under its header row, after 8 holding rows and the Total row " +
       `(row ${sevenHoldings.anchor})`,
   );
+
+  console.log("\n== Run 18: a synthetic answer with a held fund, a fund that did not enter, and a preferred line");
+  replaceHoldings(HOLDINGS_ROWS);
+  book.tab(REPORT_TAB).grid[22][1] = 0.01;
+  /**
+   * A fetch handler that answers with the synthetic answer of the positions
+   * of the request, with a cap of `maxLines` lines, and sends no request.
+   */
+  const syntheticFetch = (maxLines) => (url, options) => {
+    answerText = JSON.stringify(offlineAnswer(JSON.parse(options.payload).positions, maxLines));
+    return fakeResponse(200, answerText);
+  };
+  /**
+   * The position ids of the id row of the hidden tab.
+   */
+  const idRow = () => x.block(4, SOURCE_AT, 1, MAX_POSITIONS)[0].filter((id) => id !== "");
+  state.fetchHandler = syntheticFetch(2000);
+  const fullState = book.tab(REPORT_TAB).state();
+  logFrom = state.log.length;
+  pause(2);
+  const runFull = timedRun();
+  check(x.cell("B1") === "OK", `run 18: B1 is OK (B1 holds "${x.cell("B1")}")`);
+  checkNoTabChange(fullState, logFrom, "run 18");
+  checkRecorded("run 18", runFull);
+  const fullAnswer = JSON.parse(answerText);
+  const fullTop = topFundsOf(fullAnswer.funds);
+  check(
+    fullAnswer.funds.some((f) => f.heldBy !== null) &&
+      fullAnswer.funds.some((f) => f.heldBy === null && f.entered === false && f.accessionNumber === null) &&
+      fullAnswer.lines.some((l) => l.class === "preferred"),
+    "run 18: the answer holds a held fund, a fund that did not enter with no accession number, and a preferred line",
+  );
+  check(
+    JSON.stringify(blockRows(x, FUND_AT, 1).map(([id]) => id)) === JSON.stringify(fullTop.map((f) => f.id)) &&
+      JSON.stringify(fullTop.map((f) => f.id)) === JSON.stringify([FUND_A, FUND_B]),
+    `run 18: the funds block holds ${FUND_A} and ${FUND_B} alone, and not the held fund or ${MONEY}`,
+  );
+  const fullParts = expectedParts(fullAnswer.lines, idRow());
+  check(
+    JSON.stringify(partRowsOf(x, fullParts.length, idRow().length)) === JSON.stringify(fullParts),
+    `run 18: the lines block holds the ${fullParts.length} part rows of the answer`,
+  );
+  checkComputed(x, "run 18", fullParts.length);
+  const fullOwn = blockRows(x, OWN_AT, 5);
+  const moneyRow = fullOwn.find((cells) => cells[0] === `ticker:${MONEY}`);
+  check(
+    moneyRow !== undefined && moneyRow[2] === "fund" && near(moneyRow[3], 0.1),
+    `run 18: ${MONEY}, a fund that did not enter, is a direct holding with a row of its own (${JSON.stringify(moneyRow)})`,
+  );
+  const preferredGroup = blockRows(x, GROUP_AT, 4).find((cells) => cells[0] === "preferred");
+  check(
+    preferredGroup !== undefined && near(preferredGroup[1], 0.004) && preferredGroup[3] === FUND_A,
+    `run 18: the group block holds the class preferred (${JSON.stringify(preferredGroup)})`,
+  );
+  check(
+    near(x.cell("B14"), fullAnswer.measures.preferredWeight) && near(x.cell("B14"), 0.004),
+    `run 18: B14 holds preferredWeight (${x.cell("B14")})`,
+  );
+  check(
+    JSON.stringify(blockRows(x, STOCK_FUND_AT, 1).map(([id]) => id)) === JSON.stringify([FUND_A, FUND_B]),
+    `run 18: the stock fund block holds ${FUND_A} and ${FUND_B}, and not ${MONEY}`,
+  );
+
+  console.log("\n== Run 19: a synthetic answer with a cap of 5 lines and the cap line");
+  state.fetchHandler = syntheticFetch(5);
+  const capState = book.tab(REPORT_TAB).state();
+  logFrom = state.log.length;
+  pause(2);
+  const runCap = timedRun();
+  check(x.cell("B1") === "OK", `run 19: B1 is OK (B1 holds "${x.cell("B1")}")`);
+  checkNoTabChange(capState, logFrom, "run 19");
+  checkRecorded("run 19", runCap);
+  const capAnswer = JSON.parse(answerText);
+  const capLine = capAnswer.lines.at(-1);
+  check(
+    capAnswer.lines.length === 6 && capLine.key === "other:lines" && capLine.stockWeight > 0,
+    `run 19: the answer holds 5 lines and the cap line, which holds stock (${capLine.stockWeight})`,
+  );
+  const capParts = expectedParts(capAnswer.lines, idRow());
+  const capRows = partRowsOf(x, capParts.length, idRow().length);
+  check(
+    JSON.stringify(capRows) === JSON.stringify(capParts) &&
+      JSON.stringify(capRows.slice(-2).map((cells) => [cells[0], cells[LINE_FIELDS.length]])) ===
+        JSON.stringify([
+          ["other:lines", "stock"],
+          ["other:lines", "other"],
+        ]),
+    "run 19: the lines block holds the stock part and the other part of the cap line last",
+  );
+  checkComputed(x, "run 19", capParts.length);
+  const capOwn = blockRows(x, OWN_AT, 5).find((cells) => cells[0] === "other:lines");
+  check(
+    capOwn !== undefined &&
+      capOwn[1] === "Other lines" &&
+      near(capOwn[3], capLine.weight - capLine.stockWeight) &&
+      capOwn[4] === `${FUND_A}, ${FUND_B}`,
+    `run 19: the other part of the cap line has a row of its own (${JSON.stringify(capOwn)})`,
+  );
+  const spillText = report.cell(SPILL_CELL);
+  check(
+    spillText.includes('IF(k="other:lines","many small lines, combined",') &&
+      spillText.includes('IF(rk>0," and more","")') &&
+      spillText.includes('"preferred","Preferred shares inside funds"') &&
+      spillText.includes('"preferred","preferred shares"'),
+    "the report names the cap line and the class preferred, and the row of the securities under the threshold " +
+      "says and more when the cap line holds stock",
+  );
+  check(
+    report.cell("C19").endsWith(",'Concentration.Exposure'!$AR$5:$AR,\"<>other:lines\")") &&
+      report
+        .cell("C20")
+        .endsWith(
+          "+SUMIFS('Concentration.Exposure'!$AX$5:$AX,'Concentration.Exposure'!$AY$5:$AY,\"stock\",'Concentration.Exposure'!$AR$5:$AR,\"other:lines\")",
+        ),
+    "the composition puts the stock part of the cap line under the threshold, whatever its weight",
+  );
+
+  console.log("\n== Run 20: a synthetic answer with the line classes trust and cash of a direct position");
+  replaceHoldings([...HOLDINGS_ROWS, [TRUST, "Example brokerage", 500, "Example index trust"]]);
+  state.documentProperties.set(
+    `${MIX_PREFIX}${PLAN_FUND}`,
+    JSON.stringify({
+      entered: "2026-09-01",
+      parts: [
+        { ticker: FUND_A, percent: 70, substitute: false },
+        { ticker: MIX_TRUST, percent: 30, substitute: false },
+      ],
+    }),
+  );
+  state.fetchHandler = (url, options) => {
+    answerText = JSON.stringify(offlineAnswer(JSON.parse(options.payload).positions, 2000, TRUST_KINDS));
+    return fakeResponse(200, answerText);
+  };
+  const trustState = book.tab(REPORT_TAB).state();
+  logFrom = state.log.length;
+  pause(2);
+  const runTrust = timedRun();
+  check(x.cell("B1") === "OK", `run 20: B1 is OK (B1 holds "${x.cell("B1")}")`);
+  checkNoTabChange(trustState, logFrom, "run 20");
+  checkRecorded("run 20", runTrust);
+  const trustAnswer = JSON.parse(answerText);
+  const trustLine = trustAnswer.lines.find((l) => l.key === `ticker:${TRUST}`);
+  const mixTrustLine = trustAnswer.lines.find((l) => l.key === `ticker:${MIX_TRUST}`);
+  const moneyLine = trustAnswer.lines.find((l) => l.key === `ticker:${MONEY}`);
+  check(
+    trustLine?.class === "trust" &&
+      trustLine.stockWeight === 0 &&
+      mixTrustLine?.class === "trust" &&
+      moneyLine?.class === "cash" &&
+      !trustAnswer.funds.some((f) => f.ticker === MONEY),
+    "run 20: the answer holds two trust lines with no stock weight, and a cash line of the money market fund " +
+      "with no element of the funds block",
+  );
+  const trustParts = expectedParts(trustAnswer.lines, idRow());
+  check(
+    JSON.stringify(partRowsOf(x, trustParts.length, idRow().length)) === JSON.stringify(trustParts),
+    `run 20: the lines block holds the ${trustParts.length} part rows of the answer`,
+  );
+  check(
+    trustParts
+      .filter((cells) => cells[0] === `ticker:${TRUST}` || cells[0] === `ticker:${MIX_TRUST}`)
+      .every((cells) => cells[LINE_FIELDS.length] === "other"),
+    "run 20: each part row of a trust line is of the other part, so no trust is a company row",
+  );
+  checkComputed(x, "run 20", trustParts.length);
+  const trustOwn = blockRows(x, OWN_AT, 5);
+  const trustRow = trustOwn.find((cells) => cells[0] === `ticker:${TRUST}`);
+  check(
+    trustRow !== undefined && trustRow[2] === "trust" && near(trustRow[3], trustLine.weight) && trustRow[4] === TRUST,
+    `run 20: the trust that the person holds has a row of its own at its full weight (${JSON.stringify(trustRow)})`,
+  );
+  const cashRow = trustOwn.find((cells) => cells[0] === `ticker:${MONEY}`);
+  check(
+    cashRow !== undefined && cashRow[2] === "cash" && near(cashRow[3], moneyLine.weight) && cashRow[4] === MONEY,
+    `run 20: the money market fund that the person holds has a row of its own (${JSON.stringify(cashRow)})`,
+  );
+  const trustGroups = blockRows(x, GROUP_AT, 4);
+  const trustGroup = trustGroups.find((cells) => cells[0] === "trust");
+  check(
+    !trustOwn.some((cells) => cells[0] === `ticker:${MIX_TRUST}`) &&
+      trustGroup !== undefined &&
+      near(trustGroup[1], mixTrustLine.weight) &&
+      trustGroup[2] === 1 &&
+      trustGroup[3] === PLAN_FUND,
+    `run 20: the trust in the fund mix goes into the group trust (${JSON.stringify(trustGroup)})`,
+  );
+  check(
+    JSON.stringify(blockRows(x, FUND_AT, 1).map(([id]) => id)) ===
+      JSON.stringify(topFundsOf(trustAnswer.funds).map((f) => f.id)) &&
+      !blockRows(x, FUND_AT, 1).some(([id]) => id === MONEY || id === TRUST),
+    `run 20: the funds block holds neither ${MONEY} nor ${TRUST}`,
+  );
+  const trustSpill = report.cell(SPILL_CELL);
+  check(
+    trustSpill.includes('"trust","trust or closed-end fund, no holdings data","cash","money market fund"') &&
+      trustSpill.includes('"trust","Trusts and closed-end funds inside funds"') &&
+      trustSpill.includes('"trust","trust or closed-end fund",x'),
+    "the report names a direct trust line, a direct cash line, and the group trust",
+  );
+  state.documentProperties.clear();
+  replaceHoldings(HOLDINGS_ROWS);
 
   /**
    * The accepted state of the report tab with other values in the two cells
